@@ -56,7 +56,12 @@ interface AppState {
   addIconsToProject: (projectId: string, iconIds: string[]) => void;
   removeIconFromProject: (projectId: string, iconId: string) => void;
 
-  getIconsInProject: (projectId: string) => Promise<IconItem[]>;
+  getIconsInProject: (projectId: string) => Promise<{
+    items: IconItem[];
+    total: number;
+    loaded: number;
+    failed: number;
+  }>;
   getIconItem: (meta: IconMeta) => Promise<IconItem | null>;
 }
 
@@ -252,7 +257,10 @@ export const useAppStore = create<AppState>((set, get) => ({
   getIconItem: async (meta) => {
     try {
       const dataUrl = await getIconDataUrl(meta.id);
-      if (!dataUrl) return null;
+      if (!dataUrl) {
+        toastHandlers.showWarning(`图标 "${meta.name}" 数据缺失`);
+        return null;
+      }
       return { ...meta, dataUrl };
     } catch (e) {
       toastHandlers.showError(`加载图标 "${meta.name}" 失败`);
@@ -263,18 +271,23 @@ export const useAppStore = create<AppState>((set, get) => ({
   getIconsInProject: async (projectId) => {
     const state = get();
     const project = state.projects.find((p) => p.id === projectId);
-    if (!project) return [];
+    if (!project) return { items: [], total: 0, loaded: 0, failed: 0 };
     const metaMap = new Map(state.icons.map((i) => [i.id, i]));
     const metas = project.iconIds
       .map((id) => metaMap.get(id))
       .filter((m): m is IconMeta => !!m);
 
     const items: IconItem[] = [];
+    let failed = 0;
     for (const meta of metas) {
       const item = await get().getIconItem(meta);
       if (item) items.push(item);
+      else failed++;
     }
-    return items;
+    if (failed > 0) {
+      toastHandlers.showWarning(`成功加载 ${items.length} 个图标，${failed} 个加载失败`);
+    }
+    return { items, total: metas.length, loaded: items.length, failed };
   },
 }));
 

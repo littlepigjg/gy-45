@@ -55,7 +55,10 @@ export async function getIconBlob(id: string): Promise<Blob | null> {
     const req = store.get(id);
     req.onsuccess = () => {
       const record = req.result as IconBlobRecord | undefined;
-      resolve(record?.blob || null);
+      const raw = record?.blob;
+      if (!raw) resolve(null);
+      else if (raw instanceof Blob) resolve(raw);
+      else resolve(new Blob([(raw as any).buffer ?? raw], { type: (raw as any).type || 'image/png' }));
     };
     req.onerror = () => reject(req.error);
   });

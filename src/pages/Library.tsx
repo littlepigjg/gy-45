@@ -1,4 +1,4 @@
-import { useState, useRef, useMemo, useEffect } from 'react';
+import { useState, useRef, useMemo, useEffect, useCallback } from 'react';
 import {
   FolderKanban,
   Plus,
@@ -14,14 +14,19 @@ import {
   Calendar,
   ChevronRight,
   Loader2,
+  AlertCircle,
+  RefreshCw,
+  AlertTriangle,
 } from 'lucide-react';
 import { useNavigate } from 'react-router-dom';
 import { useAppStore } from '@/store/useAppStore';
 import { createIconItemsFromFiles, formatDate, cn } from '@/utils';
+import { useToast } from '@/components/Toast';
 import type { IconItem, Project } from '@/types';
 
 export default function Library() {
   const navigate = useNavigate();
+  const toast = useToast();
   const inputRef = useRef<HTMLInputElement>(null);
   const [editingId, setEditingId] = useState<string | null>(null);
   const [editingName, setEditingName] = useState('');
@@ -32,6 +37,9 @@ export default function Library() {
   const [contextMenu, setContextMenu] = useState<{ x: number; y: number; icon: IconItem } | null>(null);
   const [projectIcons, setProjectIcons] = useState<IconItem[]>([]);
   const [isLoading, setIsLoading] = useState(false);
+  const [loadError, setLoadError] = useState<string | null>(null);
+  const [loadStats, setLoadStats] = useState<{ total: number; loaded: number; failed: number } | null>(null);
+  const [loadAttempt, setLoadAttempt] = useState(0);
 
   const {
     projects,
@@ -53,21 +61,63 @@ export default function Library() {
     [projects, activeProjectId]
   );
 
+  const loadIcons = useCallback(async () => {
+    if (!activeProjectId) {
+      setProjectIcons([]);
+      setLoadError(null);
+      setLoadStats(null);
+      return;
+    }
+    setIsLoading(true);
+    setLoadError(null);
+    try {
+      const result = await getIconsInProject(activeProjectId);
+      setProjectIcons(result.items);
+      setLoadStats({ total: result.total, loaded: result.loaded, failed: result.failed });
+      if (result.failed > 0 && result.loaded === 0) {
+        setLoadError(`所有 ${result.total} 个图标均加载失败，图片数据可能已丢失`);
+      } else if (result.failed > 0) {
+        setLoadError(`${result.failed} 个图标加载失败，请检查本地存储或尝试刷新`);
+      }
+    } catch (e) {
+      const msg = e instanceof Error ? e.message : '未知错误';
+      setLoadError(`加载图标时发生错误：${msg}`);
+      toast.showError('加载图标失败');
+    } finally {
+      setIsLoading(false);
+    }
+  }, [activeProjectId, getIconsInProject, toast]);
+
   useEffect(() => {
     let cancelled = false;
     if (!activeProjectId) {
       setProjectIcons([]);
+      setLoadError(null);
+      setLoadStats(null);
       return;
     }
     setIsLoading(true);
-    getIconsInProject(activeProjectId).then((icons) => {
-      if (!cancelled) {
-        setProjectIcons(icons);
-        setIsLoading(false);
+    setLoadError(null);
+    (async () => {
+      try {
+        const result = await getIconsInProject(activeProjectId);
+        if (cancelled) return;
+        setProjectIcons(result.items);
+        setLoadStats({ total: result.total, loaded: result.loaded, failed: result.failed });
+        if (result.failed > 0 && result.loaded === 0) {
+          setLoadError(`所有 ${result.total} 个图标均加载失败，图片数据可能已丢失`);
+        }
+      } catch (e) {
+        if (cancelled) return;
+        const msg = e instanceof Error ? e.message : '未知错误';
+        setLoadError(`加载图标时发生错误：${msg}`);
+        toast.showError('加载图标失败');
+      } finally {
+        if (!cancelled) setIsLoading(false);
       }
-    });
+    })();
     return () => { cancelled = true; };
-  }, [activeProjectId, getIconsInProject]);
+  }, [activeProjectId, getIconsInProject, loadAttempt, toast]);
 
   const filteredIcons = useMemo(() => {
     if (!searchQuery.trim()) return projectIcons;
@@ -83,6 +133,12 @@ export default function Library() {
       await addIcons(newIcons);
       addIconsToProject(activeProjectId, newIcons.map((i) => i.id));
       setProjectIcons((prev) => [...prev, ...newIcons]);
+      setLoadStats((prev) => prev ? {
+        total: prev.total + newIcons.length,
+        loaded: prev.loaded + newIcons.length,
+        failed: prev.failed,
+      } : null);
+      setLoadError(null);
     } catch {
       /* toast already shown in store */
     }
@@ -135,6 +191,11 @@ export default function Library() {
     if (!activeProjectId || selectedIconIds.size === 0) return;
     selectedIconIds.forEach((id) => removeIconFromProject(activeProjectId, id));
     setProjectIcons((prev) => prev.filter((i) => !selectedIconIds.has(i.id)));
+    setLoadStats((prev) => prev ? {
+      ...prev,
+      total: prev.total - selectedIconIds.size,
+      loaded: prev.loaded - selectedIconIds.size,
+    } : null);
     setSelectedIconIds(new Set());
   };
 
@@ -142,6 +203,8 @@ export default function Library() {
     if (!confirm(`删除项目 "${p.name}"?`)) return;
     await deleteProject(p.id);
     setProjectIcons([]);
+    setLoadError(null);
+    setLoadStats(null);
   };
 
   const handleIconContext = (e: React.MouseEvent, icon: IconItem) => {
@@ -153,7 +216,133 @@ export default function Library() {
     if (!activeProjectId) return;
     removeIconFromProject(activeProjectId, iconId);
     setProjectIcons((prev) => prev.filter((i) => i.id !== iconId));
+    setLoadStats((prev) => prev ? {
+      ...prev,
+      total: prev.total - 1,
+      loaded: prev.loaded - 1,
+    } : null);
     setContextMenu(null);
+  };
+
+  const renderContentArea = () => {
+    if (isLoading) {
+      return (
+        <div className="h-full flex flex-col items-center justify-center text-slate-400">
+          <Loader2 className="w-8 h-8 animate-spin mb-3 text-neon-cyan" />
+          <div className="text-sm">正在从本地数据库加载图标...</div>
+          <div className="text-xs text-slate-600 mt-1">若图标较多可能需要几秒钟</div>
+        </div>
+      );
+    }
+
+    if (loadError && loadStats && loadStats.loaded === 0) {
+      return (
+        <div className="h-full flex flex-col items-center justify-center px-8 text-center">
+          <div className="w-16 h-16 rounded-full bg-rose-500/10 border border-rose-500/30 flex items-center justify-center mb-4">
+            <AlertCircle className="w-8 h-8 text-rose-400" />
+          </div>
+          <div className="text-base font-medium text-slate-200 mb-2">加载失败</div>
+          <div className="text-sm text-slate-500 max-w-md mb-5 leading-relaxed">{loadError}</div>
+          <div className="flex gap-2">
+            <button
+              onClick={() => setLoadAttempt((n) => n + 1)}
+              className="btn btn-secondary"
+            >
+              <RefreshCw className="w-4 h-4" />
+              重试加载
+            </button>
+            <button
+              onClick={() => inputRef.current?.click()}
+              className="btn btn-primary"
+            >
+              <Upload className="w-4 h-4" />
+              重新上传图标
+            </button>
+          </div>
+        </div>
+      );
+    }
+
+    if (filteredIcons.length === 0) {
+      const isSearchEmpty = !!searchQuery.trim();
+      return (
+        <div
+          onClick={() => !isSearchEmpty && inputRef.current?.click()}
+          className={cn(
+            'h-full min-h-[300px] flex flex-col items-center justify-center border-2 border-dashed rounded-xl transition-all',
+            isSearchEmpty
+              ? 'text-slate-600 border-ink-700 cursor-default'
+              : 'text-slate-500 border-ink-600 hover:border-neon-cyan/40 hover:bg-white/[0.02] cursor-pointer'
+          )}
+        >
+          <Upload className="w-10 h-10 mb-3 opacity-50" />
+          <div className="text-sm">
+            {isSearchEmpty ? '没有匹配搜索结果的图标' : '项目中暂无图标，点击上传'}
+          </div>
+          {loadError && loadStats && loadStats.failed > 0 && (
+            <div className="mt-4 flex items-center gap-2 text-xs text-neon-amber">
+              <AlertTriangle className="w-3.5 h-3.5" />
+              {loadStats.failed} 个图标加载失败
+              <button
+                onClick={(e) => { e.stopPropagation(); loadIcons(); }}
+                className="underline hover:text-neon-cyan ml-1"
+              >
+                重试
+              </button>
+            </div>
+          )}
+        </div>
+      );
+    }
+
+    return (
+      <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-5 xl:grid-cols-6 2xl:grid-cols-8 gap-3">
+        {filteredIcons.map((icon) => (
+          <div
+            key={icon.id}
+            onContextMenu={(e) => handleIconContext(e, icon)}
+            onClick={() => toggleSelect(icon.id)}
+            className={cn(
+              'group relative bg-ink-800/50 border rounded-lg overflow-hidden cursor-pointer transition-all',
+              selectedIconIds.has(icon.id)
+                ? 'border-neon-cyan ring-1 ring-neon-cyan/50 shadow-glow-cyan'
+                : 'border-ink-600 hover:border-ink-500'
+            )}
+          >
+            {selectedIconIds.has(icon.id) && (
+              <div className="absolute top-2 left-2 z-10 w-5 h-5 rounded bg-neon-cyan flex items-center justify-center">
+                <Check className="w-3 h-3 text-ink-950" />
+              </div>
+            )}
+            <button
+              onClick={(e) => {
+                e.stopPropagation();
+                if (confirm(`删除图标 "${icon.name}"?`)) {
+                  handleRemoveSingle(icon.id);
+                }
+              }}
+              className="absolute top-2 right-2 z-10 w-5 h-5 rounded bg-ink-900/80 opacity-0 group-hover:opacity-100 hover:bg-rose-600 transition-all flex items-center justify-center"
+            >
+              <X className="w-3 h-3 text-white" />
+            </button>
+            <div className="aspect-square checkerboard p-3 flex items-center justify-center">
+              <img
+                src={icon.dataUrl}
+                alt={icon.name}
+                className="max-w-full max-h-full object-contain pointer-events-none"
+                draggable={false}
+              />
+            </div>
+            <div className="px-2.5 py-2 bg-ink-900/50 border-t border-ink-700/30">
+              <div className="text-[11px] text-slate-300 truncate font-mono">{icon.name}</div>
+              <div className="text-[10px] text-slate-500 font-mono mt-0.5">
+                {icon.width}×{icon.height}
+              </div>
+            </div>
+          </div>
+        ))}
+      </div>
+    );
   };
 
   return (
@@ -327,6 +516,29 @@ export default function Library() {
                   />
                 </div>
 
+                {loadStats && loadStats.total > 0 && (
+                  <div className="flex items-center gap-1.5">
+                    <span className={cn(
+                      'chip font-mono',
+                      loadStats.failed > 0
+                        ? 'bg-neon-amber/10 text-neon-amber border border-neon-amber/20'
+                        : 'bg-neon-cyan/10 text-neon-cyan border border-neon-cyan/20'
+                    )}>
+                      {loadStats.loaded}/{loadStats.total}
+                      {loadStats.failed > 0 && ` (${loadStats.failed}失败)`}
+                    </span>
+                    {loadStats.failed > 0 && (
+                      <button
+                        onClick={() => setLoadAttempt((n) => n + 1)}
+                        className="btn-ghost btn !px-2 !py-1 text-xs"
+                        title="重新加载"
+                      >
+                        <RefreshCw className="w-3.5 h-3.5" />
+                      </button>
+                    )}
+                  </div>
+                )}
+
                 {filteredIcons.length > 0 && (
                   <button
                     onClick={selectAll}
@@ -368,74 +580,7 @@ export default function Library() {
               </div>
 
               <div className="flex-1 overflow-y-auto scrollbar-thin p-4">
-                {isLoading ? (
-                  <div className="h-full flex items-center justify-center text-slate-500">
-                    <Loader2 className="w-5 h-5 animate-spin mr-2" />
-                    加载图标中...
-                  </div>
-                ) : filteredIcons.length === 0 ? (
-                  <div
-                    onClick={() => inputRef.current?.click()}
-                    className={cn(
-                      'h-full min-h-[300px] flex flex-col items-center justify-center border-2 border-dashed rounded-xl cursor-pointer transition-all',
-                      searchQuery.trim()
-                        ? 'text-slate-600 border-ink-700'
-                        : 'text-slate-600 border-ink-600 hover:border-neon-cyan/40 hover:bg-white/[0.02]'
-                    )}
-                  >
-                    <Upload className="w-10 h-10 mb-3 opacity-50" />
-                    <div className="text-sm">
-                      {searchQuery.trim() ? '没有匹配的图标' : '项目中暂无图标，点击上传'}
-                    </div>
-                  </div>
-                ) : (
-                  <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-5 xl:grid-cols-6 2xl:grid-cols-8 gap-3">
-                    {filteredIcons.map((icon) => (
-                      <div
-                        key={icon.id}
-                        onContextMenu={(e) => handleIconContext(e, icon)}
-                        onClick={() => toggleSelect(icon.id)}
-                        className={cn(
-                          'group relative bg-ink-800/50 border rounded-lg overflow-hidden cursor-pointer transition-all',
-                          selectedIconIds.has(icon.id)
-                            ? 'border-neon-cyan ring-1 ring-neon-cyan/50 shadow-glow-cyan'
-                            : 'border-ink-600 hover:border-ink-500'
-                        )}
-                      >
-                        {selectedIconIds.has(icon.id) && (
-                          <div className="absolute top-2 left-2 z-10 w-5 h-5 rounded bg-neon-cyan flex items-center justify-center">
-                            <Check className="w-3 h-3 text-ink-950" />
-                          </div>
-                        )}
-                        <button
-                          onClick={(e) => {
-                            e.stopPropagation();
-                            if (confirm(`删除图标 "${icon.name}"?`)) {
-                              handleRemoveSingle(icon.id);
-                            }
-                          }}
-                          className="absolute top-2 right-2 z-10 w-5 h-5 rounded bg-ink-900/80 opacity-0 group-hover:opacity-100 hover:bg-rose-600 transition-all flex items-center justify-center"
-                        >
-                          <X className="w-3 h-3 text-white" />
-                        </button>
-                        <div className="aspect-square checkerboard p-3 flex items-center justify-center">
-                          <img
-                            src={icon.dataUrl}
-                            alt={icon.name}
-                            className="max-w-full max-h-full object-contain pointer-events-none"
-                            draggable={false}
-                          />
-                        </div>
-                        <div className="px-2.5 py-2 bg-ink-900/50 border-t border-ink-700/30">
-                          <div className="text-[11px] text-slate-300 truncate font-mono">{icon.name}</div>
-                          <div className="text-[10px] text-slate-500 font-mono mt-0.5">
-                            {icon.width}×{icon.height}
-                          </div>
-                        </div>
-                      </div>
-                    ))}
-                  </div>
-                )}
+                {renderContentArea()}
               </div>
             </>
           )}
