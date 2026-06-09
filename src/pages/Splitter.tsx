@@ -1,7 +1,7 @@
 import { useState, useRef, useCallback, useEffect } from 'react';
 import { Upload, Download, Scissors, ScanEye, RotateCcw, Check, FolderPlus, Trash2, Package } from 'lucide-react';
 import JSZip from 'jszip';
-import { fileToDataUrl, createIconItems, cn } from '@/utils';
+import { fileToDataUrl, createIconItemsFromFiles, cn } from '@/utils';
 import { splitSprite, autoDetectGrid } from '@/services/spriteSplitter';
 import { useAppStore } from '@/store/useAppStore';
 import type { SplitConfig, SplitIcon } from '@/types';
@@ -121,15 +121,19 @@ export default function Splitter() {
       return new File([ab], `${icon.name}.png`, { type: 'image/png' });
     });
 
-    const newIcons = await createIconItems(files);
-    addIcons(newIcons);
-    addIconsToProject(selectedProjectId, newIcons.map((i) => i.id));
-    setSaved(true);
-    setTimeout(() => {
-      setSaved(false);
-      setShowProjectModal(false);
-      setSelectedProjectId('');
-    }, 1200);
+    const newIcons = await createIconItemsFromFiles(files);
+    try {
+      await addIcons(newIcons);
+      addIconsToProject(selectedProjectId, newIcons.map((i) => i.id));
+      setSaved(true);
+      setTimeout(() => {
+        setSaved(false);
+        setShowProjectModal(false);
+        setSelectedProjectId('');
+      }, 1200);
+    } catch {
+      /* toast already shown in store */
+    }
   };
 
   const updateConfig = (key: keyof SplitConfig, value: number) => {

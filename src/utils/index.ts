@@ -1,5 +1,12 @@
-import type { IconItem } from '../types';
-import { generateId } from '../store/useAppStore';
+import type { IconItem, IconMeta } from '../types';
+
+export function generateId(): string {
+  return Date.now().toString(36) + Math.random().toString(36).slice(2, 8);
+}
+
+export function cn(...classes: (string | false | null | undefined)[]): string {
+  return classes.filter(Boolean).join(' ');
+}
 
 export function fileToDataUrl(file: File): Promise<string> {
   return new Promise((resolve, reject) => {
@@ -19,28 +26,6 @@ export function getImageSize(
     img.onerror = reject;
     img.src = dataUrl;
   });
-}
-
-export async function createIconItem(file: File): Promise<IconItem> {
-  const dataUrl = await fileToDataUrl(file);
-  const size = await getImageSize(dataUrl);
-  const name = file.name.replace(/\.[^/.]+$/, '');
-  return {
-    id: generateId(),
-    name,
-    originalName: file.name,
-    width: size.width,
-    height: size.height,
-    dataUrl,
-    addedAt: Date.now(),
-  };
-}
-
-export async function createIconItems(files: FileList | File[]): Promise<IconItem[]> {
-  const fileArray = Array.from(files).filter((f) =>
-    /^image\/(png|jpe?g|gif|webp|svg\+xml)$/i.test(f.type)
-  );
-  return Promise.all(fileArray.map(createIconItem));
 }
 
 export function downloadDataUrl(dataUrl: string, filename: string) {
@@ -70,6 +55,33 @@ export function formatDate(ts: number): string {
   return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())} ${pad(d.getHours())}:${pad(d.getMinutes())}`;
 }
 
-export function cn(...classes: (string | false | null | undefined)[]): string {
-  return classes.filter(Boolean).join(' ');
+function isImageFile(file: File): boolean {
+  return /^image\/(png|jpe?g|gif|webp|svg\+xml)$/i.test(file.type);
+}
+
+export async function createIconItemFromFile(file: File): Promise<IconItem> {
+  const dataUrl = await fileToDataUrl(file);
+  const size = await getImageSize(dataUrl);
+  const name = file.name.replace(/\.[^/.]+$/, '');
+  return {
+    id: generateId(),
+    name,
+    originalName: file.name,
+    width: size.width,
+    height: size.height,
+    dataUrl,
+    addedAt: Date.now(),
+  };
+}
+
+export async function createIconItemsFromFiles(
+  files: FileList | File[]
+): Promise<IconItem[]> {
+  const fileArray = Array.from(files).filter(isImageFile);
+  return Promise.all(fileArray.map(createIconItemFromFile));
+}
+
+export function iconItemToMeta(item: IconItem): IconMeta {
+  const { dataUrl: _, ...meta } = item;
+  return meta;
 }

@@ -17,7 +17,7 @@ import {
   Grid3X3,
 } from 'lucide-react';
 import { useAppStore } from '@/store/useAppStore';
-import { createIconItems, downloadDataUrl, downloadText, cn } from '@/utils';
+import { createIconItemsFromFiles, downloadDataUrl, downloadText, cn } from '@/utils';
 import { generateSprite } from '@/services/spriteGenerator';
 import type { SpriteResult, IconItem } from '@/types';
 
@@ -44,7 +44,7 @@ export default function Generator() {
   } = useAppStore();
 
   const handleFiles = useCallback(async (files: FileList | File[]) => {
-    const icons = await createIconItems(files);
+    const icons = await createIconItemsFromFiles(files);
     if (icons.length > 0) {
       setGeneratorIcons([...generatorIcons, ...icons]);
     }
@@ -103,12 +103,16 @@ export default function Generator() {
     downloadText(spriteResult.cssCode, 'sprite.css', 'text/css');
   };
 
-  const saveToProject = () => {
+  const saveToProject = async () => {
     if (!selectedProjectId || generatorIcons.length === 0) return;
-    addIcons(generatorIcons);
-    addIconsToProject(selectedProjectId, generatorIcons.map((i) => i.id));
-    setShowProjectModal(false);
-    setSelectedProjectId('');
+    try {
+      await addIcons(generatorIcons);
+      addIconsToProject(selectedProjectId, generatorIcons.map((i) => i.id));
+      setShowProjectModal(false);
+      setSelectedProjectId('');
+    } catch {
+      /* toast already shown in store */
+    }
   };
 
   const DragHandle = ({ index }: { index: number }) => {

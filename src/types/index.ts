@@ -1,11 +1,14 @@
-export interface IconItem {
+export interface IconMeta {
   id: string;
   name: string;
   originalName: string;
   width: number;
   height: number;
-  dataUrl: string;
   addedAt: number;
+}
+
+export interface IconItem extends IconMeta {
+  dataUrl: string;
 }
 
 export interface Project {
